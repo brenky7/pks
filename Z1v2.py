@@ -7,7 +7,7 @@ from MyDictionaries import SAPtypes, ETHERtypes, IPtypes, portsTCP, portsUDP
 from MyDictionaries import PIDtypes
 import ruamel.yaml
 
-zaznam = "/Users/peterbrenkus/Desktop/skola/sem3/pks/Z1/pcap/trace-15.pcap"
+zaznam = "/Users/peterbrenkus/Desktop/skola/sem3/pks/Z1/pcap/eth-9.pcap"
 packets = rdpcap(zaznam)
 filter = input("Zadajte filter: ")
 output = []
@@ -31,7 +31,130 @@ elif filter == "ftp-data":
     print("FTP data")
 
 elif filter == "tftp":
-    print("TFTP")
+    udp_pakety = []
+    counter = 1
+    for packet in packets:
+        hex_data = packet.build().hex()
+        EternetType = hex_data[24:28]
+        if EternetType == "0800":
+            ip_type = hex_data[46:48]
+            if ip_type == "11":
+                paket_info = {"frame_number": counter}
+                manual_len = 0
+                for layer in packet:
+                    manual_len += len(layer)
+                paket_info["len_frame_pcap"] = len(packet)  # zapise dlzku paketu od pcap API
+                paket_info["len_frame_medium"] = manual_len + 4
+                paket_info["frame_type"] = "Ethernet II"
+                DMAC = ""
+                for i in range(0, 12, 2):  # zapise Destination MAC
+                    DMAC = DMAC + hex_data[i:i + 2] + ":"
+                DMAC = DMAC[:-1]
+                SMAC = ""
+                for i in range(12, 24, 2):  # zapise Source MAC
+                    SMAC = SMAC + hex_data[i:i + 2] + ":"
+                SMAC = SMAC[:-1]
+                paket_info["src_mac"] = SMAC
+                paket_info["dst_mac"] = DMAC
+                paket_info["ether_type"] = ETHERtypes[EternetType]
+                SIP = ""
+                for i in range(52, 60, 2):  # zapise Source IP
+                    part = f"{int(hex_data[i:i + 2], 16)}"
+                    SIP = SIP + part + "."
+                SIP = SIP[:-1]
+                DIP = ""
+                for i in range(60, 68, 2):  # zapise Destination IP
+                    part = f"{int(hex_data[i:i + 2], 16)}"
+                    DIP = DIP + part + "."
+                DIP = DIP[:-1]
+                paket_info["src_ip"] = SIP
+                paket_info["dst_ip"] = DIP
+                paket_info["protocol"] = IPtypes[ip_type]
+                if f"{int(hex_data[68:72], 16)}" in portsUDP:
+                    paket_info["src_port"] = portsUDP[f"{int(hex_data[68:72], 16)}"]
+                else:
+                    paket_info["src_port"] = int(hex_data[68:72], 16)
+                if f"{int(hex_data[72:76], 16)}" in portsUDP:
+                    paket_info["dst_port"] = portsUDP[f"{int(hex_data[72:76], 16)}"]
+                else:
+                    paket_info["dst_port"] = int(hex_data[72:76], 16)
+                paket_info["hex_data"] = PreservedScalarString(hex_data)
+                udp_pakety.append(paket_info)
+        counter += 1
+    tftp_pakety = []
+    for paket in udp_pakety:
+        src_port = paket["hex_data"][68:72]
+        dst_port = paket["hex_data"][72:76]
+        if dst_port == "0045":
+            paket["protocol"] = "TFTP"
+            tftp_pakety.append(paket)
+    for paket in udp_pakety:
+        if paket in tftp_pakety:
+            udp_pakety.remove(paket)
+    comms = []
+    communication = {}
+    pakety = []
+    counter2 = 1
+    server_port = ""
+    client_port = ""
+    for zaciatok in tftp_pakety:
+        client_port = zaciatok["src_port"]
+        done = False
+        for paket in udp_pakety:
+            if paket["dst_port"] == client_port and done == False:
+                server_port = paket["src_port"]
+                pakety.append(zaciatok)
+                pakety.append(paket)
+                communication["number_comm"] = counter2
+                done = True
+            elif paket["src_port"] == server_port and paket["dst_port"] == client_port:
+                pakety.append(paket)
+            elif paket["src_port"] == client_port and paket["dst_port"] == server_port:
+                pakety.append(paket)
+        server_port = ""
+        client_port = ""
+        for paket in pakety:
+            paket["tftp_opcode"] = int(paket["hex_data"][84:88], 16)
+            counter3 = 1
+            hex_data_final = ""
+            for pismeno in paket["hex_data"]:  # podeli hexa gulas na 2B casti a prida medzery a novy riadok po 16 castiach
+                hex_data_final += pismeno
+                if counter3 % 2 == 0 and counter3 % 32 != 0:
+                    hex_data_final += ' '
+                elif counter3 % 32 == 0:
+                    hex_data_final += '\n'
+                counter3 += 1
+            paket["hex_data"] = PreservedScalarString(hex_data_final)
+        communication["packets"] = pakety
+        counter2 += 1
+        pakety = []
+        comms.append(communication)
+        communication = {}
+    complete_comms = []
+    incomplete_comms = []
+    for comm in comms:
+        if comm["packets"][-2]["tftp_opcode"] == 3 and comm["packets"][-1]["tftp_opcode"] == 4:
+            complete_comms.append(comm)
+        else:
+            incomplete_comms.append(comm)
+    complete_comms_clean = []
+    for comm in complete_comms:
+        cleaned_comm = comm.copy()
+        cleaned_comm["packets"] = [packet.copy() for packet in comm['packets']]
+        complete_comms_clean.append(cleaned_comm)
+    incomplete_comms_clean = []
+    for comm in incomplete_comms:
+        cleaned_comm = comm.copy()
+        cleaned_comm["packets"] = [packet.copy() for packet in comm['packets']]
+        incomplete_comms_clean.append(cleaned_comm)
+
+    output.append({"name": "PKS2023/24"})
+    output.append({"pcap_name": "tftp.pcap"})
+    output.append({"filter_name": "TFTP"})
+    output.append({"complete_comms": complete_comms_clean})
+    output.append({"incomplete_comms": incomplete_comms_clean})
+    with open("output.yaml", "w") as file:
+        ruamel.yaml.dump(output, file, Dumper=ruamel.yaml.RoundTripDumper)
 
 elif filter == "icmp":
     icmp_requests = []
@@ -226,6 +349,7 @@ elif filter == "arp":
                         target_mac = target_mac + part + ":"
                     target_mac = target_mac[:-1]
                     packet_info["target_mac"] = target_mac
+                    packet_info["flag"] = "unused"
                     arp_replies.append(packet_info)
                 counter2 = 1
                 hexDataFinal = ""
@@ -238,24 +362,59 @@ elif filter == "arp":
                     counter2 += 1
                 packet_info["hexa_frame"] = PreservedScalarString(hexDataFinal)
         counter += 1
+    pakety = []
+    communication = {}
+    counter3 = 1
     for request in arp_requests:
         for reply in arp_replies:
-            if request["dst_mac"] == reply["src_mac"]:
-                complete_comms.append(request)
-                complete_comms.append(reply)
-                arp_replies.remove(reply)
-                arp_requests.remove(request)
+            if reply["dst_mac"] == request["src_mac"] and reply["flag"] == "unused":
+                reply["flag"] = "used"
+                pakety.append(request)
+                pakety.append(reply)
+                communication["number_comm"] = counter3
+                communication["packets"] = pakety
+                complete_comms.append(communication)
+                pakety = []
+                communication = {}
+                counter3 += 1
                 break
+    for comm in complete_comms:
+        for packet in comm["packets"]:
+            if packet in arp_requests:
+                arp_requests.remove(packet)
+            elif packet in arp_replies:
+                arp_replies.remove(packet)
+                del packet["flag"]
+
     for request in arp_requests:
         incomplete_comms.append(request)
     for reply in arp_replies:
         incomplete_comms.append(reply)
+    complete_comms_clean = []
+    incomplete_comms_clean = []
+    for comm in complete_comms:
+        cleaned_comm = comm.copy()
+        cleaned_comm["packets"] = [packet.copy() for packet in comm['packets']]
+        complete_comms_clean.append(cleaned_comm)
+
+    # for request in arp_requests:
+    #     for reply in arp_replies:
+    #         if reply["dst_mac"] == request["src_mac"]:
+    #             complete_comms.append(request)
+    #             complete_comms.append(reply)
+    #             arp_replies.remove(reply)
+    #             arp_requests.remove(request)
+    #             break
+    # for request in arp_requests:
+    #     incomplete_comms.append(request)
+    # for reply in arp_replies:
+    #     incomplete_comms.append(reply)
     output.append({"name": "PKS2023/24"})
     output.append({"pcap_name": "arp.pcap"})
     output.append({"filter_name": "ARP"})
-    output.append({"complete_comms": complete_comms})
+    output.append({"complete_comms": complete_comms_clean})
     output.append({"incomplete_comms": incomplete_comms})
     with open("output.yaml", "w") as file:
         ruamel.yaml.dump(output, file, Dumper=ruamel.yaml.RoundTripDumper)
 
-print(output)
+
