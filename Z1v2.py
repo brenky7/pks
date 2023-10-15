@@ -4,7 +4,7 @@ from scapy.all import rdpcap
 from MyDictionaries import SAPtypes, ETHERtypes, IPtypes, portsTCP, portsUDP, PIDtypes
 import ruamel.yaml
 
-zaznam = "/Users/peterbrenkus/Desktop/skola/sem3/pks/Z1/pcap/trace-1.pcap"
+zaznam = "/Users/peterbrenkus/Desktop/skola/sem3/pks/Z1/pcap/trace-15.pcap"
 packets = rdpcap(zaznam)
 filter = input("Zadajte filter: ")
 output = []
@@ -25,11 +25,16 @@ for packet in packets:
         SMAC = SMAC + hex_data[i:i+2] + ":"
     SMAC = SMAC[:-1]
     packet_info = {"frame_number": counter}     #vytvori slovnik s informaciami o pakete
+    packet_info["len_frame_pcap"] = len(packet.payload)
     manual_len = 0
     for layer in packet:
         manual_len += len(layer)
-    packet_info["len_frame_pcap"] = len(packet)     #zapise dlzku paketu od pcap API
-    packet_info["len_frame_medium"] = manual_len + 4    #zapise dlzku paketu manualne vypocitanu + 4B pre FCS
+    if manual_len < 64:
+        packet_info["len_frame_medium"] = 64
+    else:
+        packet_info["len_frame_medium"] = manual_len + 4
+        #zapise dlzku paketu od pcap API
+       #zapise dlzku paketu manualne vypocitanu + 4B pre FCS
     if int(EternetType, 16) > 1500:                 #ak je EthernetType vacsi ako 1500, tak je to Ethernet II
         packet_info["frame_type"] = "Ethernet II"
         if EternetType in ETHERtypes:
@@ -140,7 +145,7 @@ with open("paketyAll.yaml", "w") as yaml_file:
     ruamel.yaml.dump(fileOutput, yaml_file, Dumper=ruamel.yaml.RoundTripDumper)
 packets = rdpcap(zaznam)
 counter = 1
-output = []
+output = {}
 if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH" or filter == "FTP-control" or filter == "FTP-data":
     tcp_pakety = []
     for packet in packets:
@@ -183,14 +188,12 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
                 packet_info["src_ip"] = SIP
                 packet_info["dst_ip"] = DIP
                 packet_info["protocol"] = IPtypes[ip_type]
+                packet_info["src_port"] = int(hex_data[68:72], 16)
+                packet_info["dst_port"] = int(hex_data[72:76], 16)
                 if f"{int(hex_data[68:72], 16)}" in portsTCP:
-                    packet_info["src_port"] = portsTCP[f"{int(hex_data[68:72], 16)}"]
-                else:
-                    packet_info["src_port"] = int(hex_data[68:72], 16)
+                    packet_info["app_protocol"] = portsTCP[f"{int(hex_data[68:72], 16)}"]
                 if f"{int(hex_data[72:76], 16)}" in portsTCP:
-                    packet_info["dst_port"] = portsTCP[f"{int(hex_data[72:76], 16)}"]
-                else:
-                    packet_info["dst_port"] = int(hex_data[72:76], 16)
+                    packet_info["app_protocol"] = portsTCP[f"{int(hex_data[72:76], 16)}"]
                 flag_decimal = int(hex_data[92:96], 16)
                 flags_binary = bin(flag_decimal)[2:].zfill(16)
                 flags = []
@@ -220,11 +223,13 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
         counter += 1
     comm_number = 1
     communication = {}
-    communication["packets"] = []
     zaciatky = []
     for index in range(len(tcp_pakety)):
         if "SYN" in tcp_pakety[index]["tcp_flags"] and "ACK" not in tcp_pakety[index]["tcp_flags"]:
             communication["number_comm"] = comm_number
+            communication["src_comm"] = tcp_pakety[index]["src_ip"]
+            communication["dst_comm"] = tcp_pakety[index]["dst_ip"]
+            communication["packets"] = []
             communication["packets"].append(tcp_pakety[index])
             comm_number += 1
             zaciatky.append(communication)
@@ -246,13 +251,26 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
         if len(comm["packets"]) > 4:
             if "SYN" in comm["packets"][0]["tcp_flags"] and "ACK" in comm["packets"][1]["tcp_flags"] and "SYN" in comm["packets"][1]["tcp_flags"]and "ACK" in comm["packets"][2]["tcp_flags"]:
                zaciatok = True
+            if "SYN" in comm["packets"][0]["tcp_flags"] and "SYN" in comm["packets"][1]["tcp_flags"] and "ACK" in comm["packets"][0]["tcp_flags"]and "ACK" in comm["packets"][1]["tcp_flags"]:
+               zaciatok = True
             if "FIN" in comm["packets"][-4]["tcp_flags"] and "ACK" in comm["packets"][-3]["tcp_flags"] and "FIN" in comm["packets"][-2]["tcp_flags"] and "ACK" in comm["packets"][-1]["tcp_flags"]:
+                koniec = True
+            if "FIN" in comm["packets"][-4]["tcp_flags"] and "FIN" in comm["packets"][-3]["tcp_flags"] and "ACK" in comm["packets"][-2]["tcp_flags"] and "ACK" in comm["packets"][-1]["tcp_flags"]:
+                koniec = True
+            if "FIN" in comm["packets"][-3]["tcp_flags"] and "ACK" in comm["packets"][-3]["tcp_flags"] and "FIN" in comm["packets"][-2]["tcp_flags"] and "ACK" in comm["packets"][-2]["tcp_flags"] and "ACK" in comm["packets"][-1]["tcp_flags"]:
                 koniec = True
             if "RST" in comm["packets"][-1]["tcp_flags"]:
                 koniec = True
         if zaciatok == True and koniec == True:
             complete_comms.append(comm)
+    complete_comms_sorted = []
     for comm in complete_comms:
+        komunikacia = {}
+        komunikacia["number_comm"] = comm["number_comm"]
+        komunikacia["src_comm"] = comm["src_comm"]
+        komunikacia["dst_comm"] = comm["dst_comm"]
+        komunikacia["packets"] = comm["packets"]
+        complete_comms_sorted.append(komunikacia)
         for packet in comm["packets"]:
             if packet in tcp_pakety:
                 tcp_pakety.remove(packet)
@@ -263,7 +281,7 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
     incomplete_comms_clean = []
     tcp_pakety_2 = []
     for packet in tcp_pakety:
-        if packet["src_port"] == filter or packet["dst_port"] == filter:
+        if packet["app_protocol"] == filter:
             tcp_pakety_2.append(packet)
     if len(tcp_pakety_2) > 0:
         src_port = tcp_pakety_2[0]["src_port"]
@@ -272,7 +290,7 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
         communication["number_comm"] = comm_number
         communication["packets"] = []
         communication["packets"].append(tcp_pakety_2[0])
-        tcp_pakety.remove(tcp_pakety_2[0])
+        tcp_pakety_2.remove(tcp_pakety_2[0])
         for packet in tcp_pakety_2:
             if packet["src_port"] == src_port and packet["dst_port"] == dst_port:
                 communication["packets"].append(packet)
@@ -289,18 +307,20 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
         cleaned_comm["packets"] = []
         for packet in incomplete_comms[index]['packets']:
             cleaned_packet = packet.copy()
-            if isinstance(cleaned_packet.get("tcp_flags"), list):
-                cleaned_packet["tcp_flags"] = cleaned_packet["tcp_flags"][:]
+            del cleaned_packet["tcp_flags"]
+            # if isinstance(cleaned_packet.get("tcp_flags"), list):
+            #     cleaned_packet["tcp_flags"] = cleaned_packet["tcp_flags"][:]
             cleaned_comm["packets"].append(cleaned_packet)
         incomplete_comms_clean.append(cleaned_comm)
     complete_comms_clean = []
-    for comm in complete_comms:
+    for comm in complete_comms_sorted:
         cleaned_comm = comm.copy()
         cleaned_comm["packets"] = []
         for packet in comm['packets']:
             cleaned_packet = packet.copy()
-            if isinstance(cleaned_packet.get("tcp_flags"), list):
-                cleaned_packet["tcp_flags"] = cleaned_packet["tcp_flags"][:]
+            # if isinstance(cleaned_packet.get("tcp_flags"), list):
+            #     cleaned_packet["tcp_flags"] = cleaned_packet["tcp_flags"][:]
+            del cleaned_packet["tcp_flags"]
             cleaned_comm["packets"].append(cleaned_packet)
         complete_comms_clean.append(cleaned_comm)
     complete_final = []
@@ -308,74 +328,74 @@ if filter == "HTTP" or filter == "HTTPS" or filter == "Telnet" or filter == "SSH
     if filter == "HTTP":
         for comm in complete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "HTTP" or packet["dst_port"] == "HTTP":
+                if packet["app_protocol"] == "HTTP":
                     complete_final.append(comm)
                     break
         for comm in incomplete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "HTTP" or packet["dst_port"] == "HTTP":
+                if packet["app_protocol"] == "HTTP":
                     incomplete_final.append(comm)
                     break
     elif filter == "HTTPS":
         for comm in complete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "HTTPS" or packet["dst_port"] == "HTTPS":
+                if packet["app_protocol"] == "HTTPS":
                     complete_final.append(comm)
                     break
         for comm in incomplete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "HTTPS" or packet["dst_port"] == "HTTPS":
+                if packet["app_protocol"] == "HTTPS":
                     incomplete_final.append(comm)
                     break
     elif filter == "Telnet":
         for comm in complete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "Telnet" or packet["dst_port"] == "Telnet":
+                if packet["app_protocol"] == "Telnet":
                     complete_final.append(comm)
                     break
         for comm in incomplete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "Telnet" or packet["dst_port"] == "Telnet":
+                if packet["app_protocol"] == "Telnet":
                     incomplete_final.append(comm)
                     break
     elif filter == "SSH":
         for comm in complete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "SSH" or packet["dst_port"] == "SSH":
+                if packet["app_protocol"] == "SSH":
                     complete_final.append(comm)
                     break
         for comm in incomplete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "SSH" or packet["dst_port"] == "SSH":
+                if packet["app_protocol"] == "SSH":
                     incomplete_final.append(comm)
                     break
     elif filter == "FTP-control":
         for comm in complete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "FTP-control" or packet["dst_port"] == "FTP-control":
+                if packet["app_protocol"] == "FTP-control":
                     complete_final.append(comm)
                     break
         for comm in incomplete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "FTP-control" or packet["dst_port"] == "FTP-control":
+                if packet["app_protocol"] == "FTP-control":
                     incomplete_final.append(comm)
                     break
     elif filter == "FTP-data":
         for comm in complete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "FTP-data" or packet["dst_port"] == "FTP-data":
+                if packet["app_protocol"] == "FTP-data":
                   complete_final.append(comm)
                   break
         for comm in incomplete_comms_clean:
             for packet in comm["packets"]:
-                if packet["src_port"] == "FTP-data" or packet["dst_port"] == "FTP-data":
+                if packet["app_protocol"] == "FTP-data":
                     incomplete_final.append(comm)
                     break
-    output.append({"name": "PKS2023/24"})
-    output.append({"pcap_name": "http.pcap"})
-    output.append({"filter_name": "HTTP"})
-    output.append({"complete_comms": complete_final})
-    output.append({"incomplete_comms": incomplete_final})
+    output["name"] = "PKS2023/24"
+    output["pcap_name"] = "http.pcap"
+    output["filter_name"] = "HTTP"
+    output["complete_comms"] = complete_final
+    output["partial_comms"] = incomplete_final
     with open("output.yaml", "w") as file:
         ruamel.yaml.dump(output, file, Dumper=ruamel.yaml.RoundTripDumper)
 
@@ -393,7 +413,10 @@ elif filter == "tftp":
                 for layer in packet:
                     manual_len += len(layer)
                 paket_info["len_frame_pcap"] = len(packet)  # zapise dlzku paketu od pcap API
-                paket_info["len_frame_medium"] = manual_len + 4
+                if manual_len < 64:
+                    paket_info["len_frame_medium"] = 64
+                else:
+                    paket_info["len_frame_medium"] = manual_len + 4
                 paket_info["frame_type"] = "Ethernet II"
                 DMAC = ""
                 for i in range(0, 12, 2):  # zapise Destination MAC
@@ -421,19 +444,21 @@ elif filter == "tftp":
                 paket_info["protocol"] = IPtypes[ip_type]
                 if f"{int(hex_data[68:72], 16)}" in portsUDP:
                     paket_info["src_port"] = portsUDP[f"{int(hex_data[68:72], 16)}"]
+                    paket_info["app_protocol"] = paket_info["src_port"]
                 else:
                     paket_info["src_port"] = int(hex_data[68:72], 16)
                 if f"{int(hex_data[72:76], 16)}" in portsUDP:
                     paket_info["dst_port"] = portsUDP[f"{int(hex_data[72:76], 16)}"]
+                    paket_info["app_protocol"] = paket_info["dst_port"]
                 else:
                     paket_info["dst_port"] = int(hex_data[72:76], 16)
-                paket_info["hex_data"] = PreservedScalarString(hex_data)
+                paket_info["hexa_frame"] = PreservedScalarString(hex_data)
                 udp_pakety.append(paket_info)
         counter += 1
     tftp_pakety = []
     for paket in udp_pakety:
-        src_port = paket["hex_data"][68:72]
-        dst_port = paket["hex_data"][72:76]
+        src_port = paket["hexa_frame"][68:72]
+        dst_port = paket["hexa_frame"][72:76]
         if dst_port == "0045":
             paket["protocol"] = "TFTP"
             tftp_pakety.append(paket)
@@ -463,17 +488,17 @@ elif filter == "tftp":
         server_port = ""
         client_port = ""
         for paket in pakety:
-            paket["tftp_opcode"] = int(paket["hex_data"][84:88], 16)
+            paket["tftp_opcode"] = int(paket["hexa_frame"][84:88], 16)
             counter3 = 1
             hex_data_final = ""
-            for pismeno in paket["hex_data"]:  # podeli hexa gulas na 2B casti a prida medzery a novy riadok po 16 castiach
+            for pismeno in paket["hexa_frame"]:  # podeli hexa gulas na 2B casti a prida medzery a novy riadok po 16 castiach
                 hex_data_final += pismeno
                 if counter3 % 2 == 0 and counter3 % 32 != 0:
                     hex_data_final += ' '
                 elif counter3 % 32 == 0:
                     hex_data_final += '\n'
                 counter3 += 1
-            paket["hex_data"] = PreservedScalarString(hex_data_final)
+            paket["hexa_frame"] = PreservedScalarString(hex_data_final)
         communication["packets"] = pakety
         counter2 += 1
         pakety = []
@@ -491,17 +516,37 @@ elif filter == "tftp":
         cleaned_comm = comm.copy()
         cleaned_comm["packets"] = [packet.copy() for packet in comm['packets']]
         complete_comms_clean.append(cleaned_comm)
+    for comm in complete_comms_clean:
+        for packet in comm["packets"]:
+            if "tftp_opcode" in packet:
+                del packet["tftp_opcode"]
+            if packet["protocol"] == "TFTP":
+                packet["protocol"] = "UDP"
+            if packet["src_port"] == "TFTP":
+                packet["src_port"] = 69
+            if packet["dst_port"] == "TFTP":
+                packet["dst_port"] = 69
+
     incomplete_comms_clean = []
     for comm in incomplete_comms:
         cleaned_comm = comm.copy()
         cleaned_comm["packets"] = [packet.copy() for packet in comm['packets']]
         incomplete_comms_clean.append(cleaned_comm)
-
-    output.append({"name": "PKS2023/24"})
-    output.append({"pcap_name": "tftp.pcap"})
-    output.append({"filter_name": "TFTP"})
-    output.append({"complete_comms": complete_comms_clean})
-    output.append({"incomplete_comms": incomplete_comms_clean})
+    for comm in incomplete_comms_clean:
+        for packet in comm["packets"]:
+            if "tftp_opcode" in packet:
+                del packet["tftp_opcode"]
+            if packet["protocol"] == "TFTP":
+                packet["protocol"] = "UDP"
+            if packet["src_port"] == "TFTP":
+                packet["src_port"] = 69
+            if packet["dst_port"] == "TFTP":
+                packet["dst_port"] = 69
+    output["name"] = "PKS2023/24"
+    output["pcap_name"] = "tftp.pcap"
+    output["filter_name"] = "TFTP"
+    output["complete_comms"] = complete_comms_clean
+    output["partial_comms"] = incomplete_comms_clean
     with open("output.yaml", "w") as file:
         ruamel.yaml.dump(output, file, Dumper=ruamel.yaml.RoundTripDumper)
 
@@ -524,7 +569,10 @@ elif filter == "icmp":
                 for layer in packet:
                     manual_len += len(layer)
                 packet_info["len_frame_pcap"] = len(packet)  # zapise dlzku paketu od pcap API
-                packet_info["len_frame_medium"] = manual_len + 4
+                if manual_len < 64:
+                    packet_info["len_frame_medium"] = 64
+                else:
+                    packet_info["len_frame_medium"] = manual_len + 4
                 packet_info["frame_type"] = "Ethernet II"
                 DMAC = ""
                 for i in range(0, 12, 2):  # zapise Destination MAC
@@ -773,7 +821,7 @@ elif filter == "icmp":
         communication = {}
         counter4 += 1
 
-    file_output = {"name": "PKS2023/24", "pcap_name": "icmp.pcap", "filter_name": "ICMP","complete_comms": complete_comms_clean, "incomplete_comms": incomplete_comms_clean, "fragmented_packets": fragmented_comms}
+    file_output = {"name": "PKS2023/24", "pcap_name": "icmp.pcap", "filter_name": "ICMP","complete_comms": complete_comms_clean, "partial_comms": incomplete_comms_clean, "fragmented_packets": fragmented_comms}
     with open("output.yaml", "w") as file:
         ruamel.yaml.dump(file_output, file, default_style='', default_flow_style=False, Dumper=ruamel.yaml.RoundTripDumper)
     # file_output = {"name": "PKS2023/24", "pcap_name": "icmp.pcap", "filter_name": "ICMP", "complete_comms": complete_comms_clean, "incomplete_comms": incomplete_comms_clean}
@@ -792,6 +840,14 @@ elif filter == "arp":
         if int(EternetType, 16) > 1500:
             if ETHERtypes[EternetType] == "ARP":
                 packet_info = {"frame_number": counter}  # vytvori slovnik s informaciami o pakete
+                manual_len = 0
+                for layer in packet:
+                    manual_len += len(layer)
+                packet_info["len_frame_pcap"] = len(packet)  # zapise dlzku paketu od pcap API
+                if manual_len < 64:
+                    packet_info["len_frame_medium"] = 64
+                else:
+                    packet_info["len_frame_medium"] = manual_len + 4
                 DMAC = ""
                 for i in range(0, 12, 2):  # zapise Destination MAC
                     DMAC = DMAC + hex_data[i:i + 2] + ":"
@@ -802,11 +858,6 @@ elif filter == "arp":
                 SMAC = SMAC[:-1]
                 packet_info["src_mac"] = SMAC
                 packet_info["dst_mac"] = DMAC
-                manual_len = 0
-                for layer in packet:
-                    manual_len += len(layer)
-                packet_info["len_frame_pcap"] = len(packet)  # zapise dlzku paketu od pcap API
-                packet_info["len_frame_medium"] = manual_len + 4
                 packet_info["frame_type"] = "Ethernet II"
                 packet_info["ether_type"] = ETHERtypes[EternetType]
                 type = hex_data[40:44]
@@ -864,6 +915,8 @@ elif filter == "arp":
                 break
     for comm in complete_comms:
         for packet in comm["packets"]:
+            if "operation" in packet:
+                del packet["operation"]
             if packet in arp_requests:
                 arp_requests.remove(packet)
             elif packet in arp_replies:
@@ -880,24 +933,22 @@ elif filter == "arp":
         cleaned_comm = comm.copy()
         cleaned_comm["packets"] = [packet.copy() for packet in comm['packets']]
         complete_comms_clean.append(cleaned_comm)
-
-    # for request in arp_requests:
-    #     for reply in arp_replies:
-    #         if reply["dst_mac"] == request["src_mac"]:
-    #             complete_comms.append(request)
-    #             complete_comms.append(reply)
-    #             arp_replies.remove(reply)
-    #             arp_requests.remove(request)
-    #             break
-    # for request in arp_requests:
-    #     incomplete_comms.append(request)
-    # for reply in arp_replies:
-    #     incomplete_comms.append(reply)
-    output.append({"name": "PKS2023/24"})
-    output.append({"pcap_name": "arp.pcap"})
-    output.append({"filter_name": "ARP"})
-    output.append({"complete_comms": complete_comms_clean})
-    output.append({"incomplete_comms": incomplete_comms})
+    komunikacia = {}
+    komunikacia["number_comm"] = 1
+    komunikacia["packets"] = []
+    for comm in incomplete_comms:
+        cleaned_comm = comm.copy()
+        if "flag" in cleaned_comm:
+            del cleaned_comm["flag"]
+        if "operation" in cleaned_comm:
+            del cleaned_comm["operation"]
+        komunikacia["packets"].append(cleaned_comm)
+    incomplete_comms_clean.append(komunikacia)
+    output["name"] = "PKS2023/24"
+    output["pcap_name"] = "arp.pcap"
+    output["filter_name"] = "ARP"
+    output["complete_comms"] = complete_comms_clean
+    output["partial_comms"] = incomplete_comms_clean
     with open("output.yaml", "w") as file:
         ruamel.yaml.dump(output, file, Dumper=ruamel.yaml.RoundTripDumper)
 
