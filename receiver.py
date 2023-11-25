@@ -2,7 +2,6 @@ import os
 import socket
 import struct
 import time
-import threading
 import crcmod
 
 RECEIVE_SIZE = 60000
@@ -60,38 +59,50 @@ def user_input(receiver_sock, switch_roles_event, connection_closed_event, addre
 
 
 def receive(receiver_sock, switch_roles_event, connection_closed_event):
+    receiver_sock.settimeout(TIMEOUT)
     while not switch_roles_event.is_set():
-        data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
-        message = data.decode()
-        if message[0] == '0':
-            print(f"Received message from {address}: message type 0 - keep alive")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement")
-        elif message[0] == '4':
-            print(f"Received message from {address}: message type 4 - message send request")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement ")
-            receive_message(receiver_sock)
-            user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
-        elif message[0] == '5':
-            print(f"Received message from {address}: message type 5 - file send request")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement ")
-            receive_file(receiver_sock)
-            user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
-        elif message[0] == '7':
-            print(f"Received message from {address}: message type 7 - request to switch roles")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement ")
+        try:
+            data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
+            message = data.decode()
+            if message[0] == '0':
+                receiver_sock.settimeout(TIMEOUT)
+                print(f"Received message from {address}: message type 0 - keep alive")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement")
+            elif message[0] == '4':
+                receiver_sock.settimeout(None)
+                print(f"Received message from {address}: message type 4 - message send request")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement ")
+                receive_message(receiver_sock)
+                user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
+            elif message[0] == '5':
+                receiver_sock.settimeout(None)
+                print(f"Received message from {address}: message type 5 - file send request")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement ")
+                receive_file(receiver_sock)
+                user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
+            elif message[0] == '7':
+                receiver_sock.settimeout(None)
+                print(f"Received message from {address}: message type 7 - request to switch roles")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement ")
+                receiver_sock.close()
+                switch_roles_event.set()
+                break
+            elif message[0] == '8':
+                receiver_sock.settimeout(None)
+                print(f"Received message from {address}: message type 8 - connection close request")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement ")
+                receiver_sock.close()
+                print("Connection closed.")
+                connection_closed_event.set()
+                break
+        except socket.timeout:
+            print("Connection timed out.")
             receiver_sock.close()
-            switch_roles_event.set()
-            break
-        elif message[0] == '8':
-            print(f"Received message from {address}: message type 8 - connection close request")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement ")
-            receiver_sock.close()
-            print("Connection closed.")
             connection_closed_event.set()
             break
 
@@ -128,7 +139,12 @@ def receive_file(receiver_sock):
                         print(f"Received message from {address}: message type 2 - acknowledgement")
                         acknowledged = True
                 break
-        else:
+        elif sequence_number != expected_sequence_number:
+            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, unexpected sequence number")
+            receiver_sock.sendto("3".encode(), address)
+            print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+        elif received_crc != calculated_crc:
+            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
             receiver_sock.sendto("3".encode(), address)
             print(f"Sent message to {address}: message type 3 - negative acknowledgement")
     path = os.getcwd()
@@ -175,8 +191,12 @@ def receive_message(receiver_sock):
                         acknowledged = True
                 break
 
-        else:
-            print("Received fragment", sequence_number+2, "of", total_packets, ", size: ", length, "Bytes, data corrupted")
+        elif sequence_number != expected_sequence_number:
+            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, unexpected sequence number")
+            receiver_sock.sendto("3".encode(), address)
+            print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+        elif received_crc != calculated_crc:
+            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
             receiver_sock.sendto("3".encode(), address)
             print(f"Sent message to {address}: message type 3 - negative acknowledgement")
 

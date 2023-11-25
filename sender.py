@@ -1,5 +1,4 @@
 import os.path
-import random
 import socket
 import struct
 import threading
@@ -86,6 +85,13 @@ def send_file(sender_sock, path):
                 print(f"Received message from {address}: message type 2 - acknowledgement")
                 acknowledged = True
     else:
+        choice = input("Do you want to introduce errors in the message? (y/n): ")
+        error = False
+        corrupted_packet = -1
+        real_packet = None
+        if choice == 'y':
+            error = True
+            corrupted_packet = input("Enter the number of the packet you want to corrupt: ")
         packets = []
         total_packets = (len(file_data) + fragment_size - 1) // fragment_size
         sequence_number = 0
@@ -93,8 +99,13 @@ def send_file(sender_sock, path):
             start_idx = sequence_number * fragment_size
             end_idx = (sequence_number + 1) * fragment_size
             fragment_data = file_data[start_idx:end_idx]
-            crc = calculate_crc(fragment_data)
             header = struct.pack('>HHH', len(fragment_data), total_packets, sequence_number)
+            if error and sequence_number + 1 == int(corrupted_packet):
+                crc = "00".encode()
+                real_crc = calculate_crc(fragment_data)
+                real_packet = (header + fragment_data + real_crc)
+            else:
+                crc = calculate_crc(fragment_data)
             packet = (header + fragment_data + crc)
             packets.append(packet)
             sequence_number += 1
@@ -102,11 +113,13 @@ def send_file(sender_sock, path):
         ack_count = 0
         base = 0
         while not acknowledged:
-            for i in range(base, min(base + WINDOW_SIZE, total_packets)):
-                sender_sock.send(packets[i])
-            batch_received = False
+            sender_sock.send(packets[base])
+            print("Sent packet", base + 1, "of", total_packets)
+            if error and base == int(corrupted_packet) - 1:
+                packets[base] = real_packet
+                error = False
             try:
-                sender_sock.settimeout(10)
+                sender_sock.settimeout(TIMEOUT)
                 while True:
                     data, address = sender_sock.recvfrom(RECEIVE_SIZE)
                     message = data.decode()
@@ -116,7 +129,7 @@ def send_file(sender_sock, path):
                         base = ack_count
                         if base == total_packets:
                             acknowledged = True
-                            sender_sock.settimeout(10)
+                            sender_sock.settimeout(TIMEOUT)
                             try:
                                 while True:
                                     data, address = sender_sock.recvfrom(RECEIVE_SIZE)
@@ -131,17 +144,13 @@ def send_file(sender_sock, path):
                             except socket.timeout:
                                 sender_sock.settimeout(None)
                                 break
-                            break
-                        if base % WINDOW_SIZE == 0:
-                            batch_received = True
-                            break
+                        break
                     elif message[0] == '3':
                         print(f"Received message from {address}: message type 3 - negative acknowledgement")
                         break
             except socket.timeout:
                 sender_sock.settimeout(None)
-                if not batch_received:
-                    print("Timeout, retransmitting packets...")
+                print("Timeout, retransmitting packet...")
                 continue
 
 
@@ -163,6 +172,13 @@ def send_message(sender_sock, user_message):
                 print(f"Received message from {address}: message type 2 - acknowledgement")
                 acknowledged = True
     else:
+        choice = input("Do you want to introduce errors in the message? (y/n): ")
+        error = False
+        corrupted_packet = -1
+        real_packet = None
+        if choice == 'y':
+            error = True
+            corrupted_packet = input("Enter the number of the packet you want to corrupt: ")
         packets = []
         total_packets = (len(encoded_message) + fragment_size - 1) // fragment_size
         sequence_number = 0
@@ -171,7 +187,12 @@ def send_message(sender_sock, user_message):
             end_idx = (sequence_number + 1) * fragment_size
             fragment_data = encoded_message[start_idx:end_idx]
             header = struct.pack('>HHH', len(fragment_data), total_packets, sequence_number)
-            crc = calculate_crc(fragment_data)
+            if error and sequence_number + 1 == int(corrupted_packet):
+                crc = "00".encode()
+                real_crc = calculate_crc(fragment_data)
+                real_packet = (header + fragment_data + real_crc)
+            else:
+                crc = calculate_crc(fragment_data)
             packet = (header + fragment_data + crc)
             packets.append(packet)
             sequence_number += 1
@@ -179,11 +200,13 @@ def send_message(sender_sock, user_message):
         ack_count = 0
         base = 0
         while not acknowledged:
-            for i in range(base, min(base + WINDOW_SIZE, total_packets)):
-                sender_sock.send(packets[i])
-            batch_received = False
+            sender_sock.send(packets[base])
+            print("Sent packet", base + 1, "of", total_packets)
+            if error and base == int(corrupted_packet) - 1:
+                packets[base] = real_packet
+                error = False
             try:
-                sender_sock.settimeout(10)
+                sender_sock.settimeout(TIMEOUT)
                 while True:
                     data, address = sender_sock.recvfrom(RECEIVE_SIZE)
                     message = data.decode()
@@ -193,7 +216,7 @@ def send_message(sender_sock, user_message):
                         base = ack_count
                         if base == total_packets:
                             acknowledged = True
-                            sender_sock.settimeout(10)
+                            sender_sock.settimeout(TIMEOUT)
                             try:
                                 while True:
                                     data, address = sender_sock.recvfrom(RECEIVE_SIZE)
@@ -207,17 +230,13 @@ def send_message(sender_sock, user_message):
                             except socket.timeout:
                                 sender_sock.settimeout(None)
                                 break
-                            break
-                        if base % WINDOW_SIZE == 0:
-                            batch_received = True
-                            break
+                        break
                     elif message[0] == '3':
                         print(f"Received message from {address}: message type 3 - negative acknowledgement")
                         break
             except socket.timeout:
                 sender_sock.settimeout(None)
-                if not batch_received:
-                    print("Timeout, retransmitting packets...")
+                print("Timeout, retransmitting packet...")
                 continue
 
 
