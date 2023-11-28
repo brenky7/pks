@@ -60,7 +60,7 @@ def user_input(receiver_sock, switch_roles_event, connection_closed_event, addre
 
 def receive(receiver_sock, switch_roles_event, connection_closed_event):
     receiver_sock.settimeout(TIMEOUT)
-    while not switch_roles_event.is_set():
+    while not switch_roles_event.is_set() and not connection_closed_event.is_set():
         try:
             data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
             message = data.decode()
@@ -105,11 +105,13 @@ def receive(receiver_sock, switch_roles_event, connection_closed_event):
             receiver_sock.close()
             connection_closed_event.set()
             break
+    if connection_closed_event.is_set():
+        receiver_sock.close()
+        print("Connection closed.")
 
 
 def receive_file(receiver_sock):
-    file_name, address = receiver_sock.recvfrom(RECEIVE_SIZE)
-    file_name = file_name.decode(FORMAT)
+    file_name = receive_message(receiver_sock)
     fragments = []
     expected_sequence_number = 0
     while True:
@@ -118,7 +120,7 @@ def receive_file(receiver_sock):
         fragment_data = data[6:-2]
         received_crc = data[-2:]
         length, total_packets, sequence_number = struct.unpack('>HHH', header)
-        calculated_crc = calculate_crc(fragment_data)
+        calculated_crc = calculate_crc(header + fragment_data)
         if received_crc == calculated_crc and sequence_number == expected_sequence_number:
             fragments.append(fragment_data)
             expected_sequence_number += 1
@@ -147,11 +149,15 @@ def receive_file(receiver_sock):
             print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
             receiver_sock.sendto("3".encode(), address)
             print(f"Sent message to {address}: message type 3 - negative acknowledgement")
-    path = os.getcwd()
+    choice = input("Where do you want to store the file ? (cwd / absolute path)")
+    if choice == "cwd":
+        path = os.getcwd()
+    else:
+        path = choice
     file_path = os.path.join(path, file_name)
     with open(file_path, "wb") as file:
         file.write(reconstructed_message)
-    print("File saved in the current working directory:", file_path)
+    print("File saved at location: ", file_path)
 
 
 def receive_message(receiver_sock):
@@ -165,7 +171,7 @@ def receive_message(receiver_sock):
         received_crc = data[-2:]
 
         length, total_packets, sequence_number = struct.unpack('>HHH', header)
-        calculated_crc = calculate_crc(fragment_data)
+        calculated_crc = calculate_crc(header + fragment_data)
 
         if received_crc == calculated_crc and sequence_number == expected_sequence_number:
             fragments.append(fragment_data)
@@ -199,6 +205,7 @@ def receive_message(receiver_sock):
             print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
             receiver_sock.sendto("3".encode(), address)
             print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+    return original_message
 
 
 def main(switch_roles_event, connection_closed_event, sock):
