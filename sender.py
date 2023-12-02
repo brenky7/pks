@@ -9,22 +9,28 @@ import math
 
 FORMAT = 'utf-8'
 RECEIVE_SIZE = 60000
-TIMEOUT = 16
+TIMEOUT = 26
 WINDOW_SIZE = 4
 
 
 def establish_connection(sender_sock, DESTINATION):
     established = False
     while not established:
-        sender_sock.send("1".encode(FORMAT))
-        print(f"Sent message to {DESTINATION}: message type 1 - connect")
-        data, address = sender_sock.recvfrom(RECEIVE_SIZE)
-        message = data.decode()
-        if message[0] == '2':
-            print(f"Received message from {address}: message type 2 - acknowledgement")
-            print("Connection established.")
-            established = True
-        time.sleep(1)
+        try:
+            while not established:
+                sender_sock.send("1".encode(FORMAT))
+                print(f"Sent message to {DESTINATION}: message type 1 - connect")
+                data, address = sender_sock.recvfrom(RECEIVE_SIZE)
+                message = data.decode()
+                if message[0] == '2':
+                    print(f"Received message from {address}: message type 2 - acknowledgement")
+                    print("Connection established.")
+                    established = True
+                if not established:
+                    time.sleep(5)
+        except ConnectionRefusedError:
+            print("Destination unreachable.")
+            time.sleep(5)
 
 
 def comm_upkeep(sender_sock, DESTINATION, local_conn_close_event, message_request_event, local_switch_event):
@@ -68,7 +74,7 @@ def calculate_crc(data):
     return crc_function.crcValue.to_bytes(2, byteorder='big')
 
 
-def send_file(sender_sock, path):
+def send_file(sender_sock, path, connection_close_event):
     with open(path, 'rb') as file:
         file_data = file.read()
     min_fragment_size = len(file_data)/32760
@@ -115,49 +121,54 @@ def send_file(sender_sock, path):
         acknowledged = False
         ack_count = 0
         base = 0
-        while not acknowledged:
-            sender_sock.send(packets[base])
-            print("Sent packet", base + 1, "of", total_packets)
-            if error and base == int(corrupted_packet) - 1:
-                packets[base] = real_packet
-                error = False
+        while not acknowledged and not connection_close_event.is_set():
             try:
-                sender_sock.settimeout(TIMEOUT)
-                while True:
-                    data, address = sender_sock.recvfrom(RECEIVE_SIZE)
-                    message = data.decode()
-                    if message[0] == '2':
-                        ack_count += 1
-                        print(f"Received message from {address}: message type 2 - acknowledgement")
-                        base = ack_count
-                        if base == total_packets:
-                            acknowledged = True
-                            sender_sock.settimeout(TIMEOUT)
-                            try:
-                                while True:
-                                    data, address = sender_sock.recvfrom(RECEIVE_SIZE)
-                                    message = data.decode()
-                                    if message[0] == '6':
-                                        print(
-                                            f"Received message from {address}: message type 6 - data received successfully")
-                                        sender_sock.send("2".encode())
-                                        print(f"Sent message to {address}: message type 2 - acknowledgement")
-                                        sender_sock.settimeout(None)
-                                        break
-                            except socket.timeout:
-                                sender_sock.settimeout(None)
-                                break
-                        break
-                    elif message[0] == '3':
-                        print(f"Received message from {address}: message type 3 - negative acknowledgement")
-                        break
-            except socket.timeout:
-                sender_sock.settimeout(None)
-                print("Timeout, retransmitting packet...")
-                continue
+                sender_sock.send(packets[base])
+                print("Sent packet", base + 1, "of", total_packets)
+                if error and base == int(corrupted_packet) - 1:
+                    packets[base] = real_packet
+                    error = False
+                try:
+                    sender_sock.settimeout(TIMEOUT)
+                    while True:
+                        data, address = sender_sock.recvfrom(RECEIVE_SIZE)
+                        message = data.decode()
+                        if message[0] == '2':
+                            ack_count += 1
+                            print(f"Received message from {address}: message type 2 - acknowledgement")
+                            base = ack_count
+                            if base == total_packets:
+                                acknowledged = True
+                                sender_sock.settimeout(TIMEOUT)
+                                try:
+                                    while True:
+                                        data, address = sender_sock.recvfrom(RECEIVE_SIZE)
+                                        message = data.decode()
+                                        if message[0] == '6':
+                                            print(
+                                                f"Received message from {address}: message type 6 - data received successfully")
+                                            sender_sock.send("2".encode())
+                                            print(f"Sent message to {address}: message type 2 - acknowledgement")
+                                            sender_sock.settimeout(None)
+                                            break
+                                except socket.timeout:
+                                    sender_sock.settimeout(None)
+                                    break
+                            break
+                        elif message[0] == '3':
+                            print(f"Received message from {address}: message type 3 - negative acknowledgement")
+                            break
+                except socket.timeout:
+                    sender_sock.settimeout(None)
+                    print("Timeout, retransmitting packet...")
+                    continue
+            except ConnectionRefusedError:
+                print("Connection refused. Press enter to close connection.")
+                connection_close_event.set()
+                # time.sleep(5)
 
 
-def send_message(sender_sock, user_message):
+def send_message(sender_sock, user_message, local_conn_close_event):
     fragment_size = int(input("Enter fragment size: "))
     encoded_message = user_message.encode(FORMAT)
     if len(encoded_message) < fragment_size:
@@ -184,6 +195,10 @@ def send_message(sender_sock, user_message):
             print("Timeout, retransmitting packet...")
             sender_sock.send(packet)
             print("Sent packet 1 of 1")
+        except ConnectionRefusedError:
+            print("Connection refused. Press enter to close connection.")
+            local_conn_close_event.set()
+            # time.sleep(5)
 
     else:
         choice = input("Do you want to introduce errors in the message? (y/n): ")
@@ -213,46 +228,50 @@ def send_message(sender_sock, user_message):
         acknowledged = False
         ack_count = 0
         base = 0
-        while not acknowledged:
-            sender_sock.send(packets[base])
-            print("Sent packet", base + 1, "of", total_packets)
-            if error and base == int(corrupted_packet) - 1:
-                packets[base] = real_packet
-                error = False
+        while not acknowledged and not local_conn_close_event.is_set():
             try:
-                sender_sock.settimeout(TIMEOUT)
-                while True:
-                    data, address = sender_sock.recvfrom(RECEIVE_SIZE)
-                    message = data.decode()
-                    if message[0] == '2':
-                        ack_count += 1
-                        print(f"Received message from {address}: message type 2 - acknowledgement")
-                        base = ack_count
-                        if base == total_packets:
-                            acknowledged = True
-                            sender_sock.settimeout(TIMEOUT)
-                            try:
-                                while True:
-                                    data, address = sender_sock.recvfrom(RECEIVE_SIZE)
-                                    message = data.decode()
-                                    if message[0] == '6':
-                                        print(f"Received message from {address}: message type 6 - data received successfully")
-                                        sender_sock.send("2".encode())
-                                        print(f"Sent message to {address}: message type 2 - acknowledgement")
-                                        sender_sock.settimeout(None)
-                                        break
-                            except socket.timeout:
-                                sender_sock.settimeout(None)
-                                break
-                        break
-                    elif message[0] == '3':
-                        print(f"Received message from {address}: message type 3 - negative acknowledgement")
-                        break
-            except socket.timeout:
-                sender_sock.settimeout(None)
-                print("Timeout, retransmitting packet...")
-                continue
-
+                sender_sock.send(packets[base])
+                print("Sent packet", base + 1, "of", total_packets)
+                if error and base == int(corrupted_packet) - 1:
+                    packets[base] = real_packet
+                    error = False
+                try:
+                    sender_sock.settimeout(TIMEOUT)
+                    while True:
+                        data, address = sender_sock.recvfrom(RECEIVE_SIZE)
+                        message = data.decode()
+                        if message[0] == '2':
+                            ack_count += 1
+                            print(f"Received message from {address}: message type 2 - acknowledgement")
+                            base = ack_count
+                            if base == total_packets:
+                                acknowledged = True
+                                sender_sock.settimeout(TIMEOUT)
+                                try:
+                                    while True:
+                                        data, address = sender_sock.recvfrom(RECEIVE_SIZE)
+                                        message = data.decode()
+                                        if message[0] == '6':
+                                            print(f"Received message from {address}: message type 6 - data received successfully")
+                                            sender_sock.send("2".encode())
+                                            print(f"Sent message to {address}: message type 2 - acknowledgement")
+                                            sender_sock.settimeout(None)
+                                            break
+                                except socket.timeout:
+                                    sender_sock.settimeout(None)
+                                    break
+                            break
+                        elif message[0] == '3':
+                            print(f"Received message from {address}: message type 3 - negative acknowledgement")
+                            break
+                except socket.timeout:
+                    sender_sock.settimeout(None)
+                    print("Timeout, retransmitting packet...")
+                    continue
+            except ConnectionRefusedError:
+                print("Connection refused. Press enter to close connection.")
+                local_conn_close_event.set()
+                # time.sleep(5)
 
 def user_input(sender_sock, DESTINATION, connection_close_event, message_request_event, switch_roles_event):
     local_switch_event = threading.Event()
@@ -290,12 +309,13 @@ def user_input(sender_sock, DESTINATION, connection_close_event, message_request
                     print(f"Received message from {address}: message type 2 - acknowledgement")
                     acknowledged = True
             user_message = input("Enter your message:")
-            send_message(sender_sock, user_message)
+            send_message(sender_sock, user_message, local_conn_close_event)
             message_request_event.clear()
-            time.sleep(10)
-            comm_upkeep_thread = threading.Thread(target=comm_upkeep,
-                                                  args=(sender_sock, DESTINATION, local_conn_close_event, message_request_event, local_switch_event))
-            comm_upkeep_thread.start()
+            if not local_conn_close_event.is_set():
+                time.sleep(10)
+                comm_upkeep_thread = threading.Thread(target=comm_upkeep,
+                                                      args=(sender_sock, DESTINATION, local_conn_close_event, message_request_event, local_switch_event))
+                comm_upkeep_thread.start()
         elif choice == 'file':
             message_request_event.set()
             comm_upkeep_thread.join()
@@ -311,13 +331,14 @@ def user_input(sender_sock, DESTINATION, connection_close_event, message_request
             path = input("Enter the path to the file: ")
             # sender_sock.send(os.path.basename(path).encode(FORMAT))
             print("First need to send file name")
-            send_message(sender_sock, os.path.basename(path))
-            send_file(sender_sock, path)
+            send_message(sender_sock, os.path.basename(path), local_conn_close_event)
+            send_file(sender_sock, path, local_conn_close_event)
             message_request_event.clear()
-            time.sleep(10)
-            comm_upkeep_thread = threading.Thread(target=comm_upkeep,
-                                                  args=(sender_sock, DESTINATION, local_conn_close_event, message_request_event, local_switch_event))
-            comm_upkeep_thread.start()
+            if not local_conn_close_event.is_set():
+                time.sleep(10)
+                comm_upkeep_thread = threading.Thread(target=comm_upkeep,
+                                                      args=(sender_sock, DESTINATION, local_conn_close_event, message_request_event, local_switch_event))
+                comm_upkeep_thread.start()
         elif choice == 'switch':
             sender_sock.send("7".encode(FORMAT))
             print(f"Sent message to {DESTINATION}: message type 7 - switch roles request")

@@ -5,7 +5,7 @@ import time
 import crcmod
 
 RECEIVE_SIZE = 60000
-TIMEOUT = 16
+TIMEOUT = 31
 FORMAT = 'utf-8'
 
 
@@ -19,6 +19,7 @@ def establish_connection(receiver_sock):
             receiver_sock.sendto("2".encode(), address)
             print(f"Sent message to {address}: message type 2 - acknowledgement")
             established = True
+            print("Connection established.")
         time.sleep(1)
 
 
@@ -74,15 +75,17 @@ def receive(receiver_sock, switch_roles_event, connection_closed_event):
                 print(f"Received message from {address}: message type 4 - message send request")
                 receiver_sock.sendto("2".encode(), address)
                 print(f"Sent message to {address}: message type 2 - acknowledgement ")
-                receive_message(receiver_sock)
-                user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
+                receive_message(receiver_sock, connection_closed_event, False)
+                if not connection_closed_event.is_set():
+                    user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
             elif message[0] == '5':
                 receiver_sock.settimeout(None)
                 print(f"Received message from {address}: message type 5 - file send request")
                 receiver_sock.sendto("2".encode(), address)
                 print(f"Sent message to {address}: message type 2 - acknowledgement ")
-                receive_file(receiver_sock)
-                user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
+                receive_file(receiver_sock, connection_closed_event)
+                if not connection_closed_event.is_set():
+                    user_input(receiver_sock, switch_roles_event, connection_closed_event, address)
             elif message[0] == '7':
                 receiver_sock.settimeout(None)
                 print(f"Received message from {address}: message type 7 - request to switch roles")
@@ -96,8 +99,8 @@ def receive(receiver_sock, switch_roles_event, connection_closed_event):
                 print(f"Received message from {address}: message type 8 - connection close request")
                 receiver_sock.sendto("2".encode(), address)
                 print(f"Sent message to {address}: message type 2 - acknowledgement ")
-                receiver_sock.close()
-                print("Connection closed.")
+                # receiver_sock.close()
+                # print("Connection closed.")
                 connection_closed_event.set()
                 break
         except socket.timeout:
@@ -110,101 +113,123 @@ def receive(receiver_sock, switch_roles_event, connection_closed_event):
         print("Connection closed.")
 
 
-def receive_file(receiver_sock):
-    file_name = receive_message(receiver_sock)
+def receive_file(receiver_sock, connection_closed_event):
+    file_name = receive_message(receiver_sock, connection_closed_event, True)
     fragments = []
     expected_sequence_number = 0
-    while True:
-        data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
-        header = data[:6]
-        fragment_data = data[6:-2]
-        received_crc = data[-2:]
-        length, total_packets, sequence_number = struct.unpack('>HHH', header)
-        calculated_crc = calculate_crc(header + fragment_data)
-        if received_crc == calculated_crc and sequence_number == expected_sequence_number:
-            fragments.append(fragment_data)
-            expected_sequence_number += 1
-            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement")
-            if expected_sequence_number == total_packets:
-                # All fragments received, reconstruct the original message
-                reconstructed_message = b''.join(fragments)
-                print("Received file:", file_name, ", size: ", len(reconstructed_message), "Bytes")
-                receiver_sock.sendto("6".encode(), address)
-                print(f"Sent message to {address}: message type 6 - data received successfully")
-                acknowledged = False
-                while not acknowledged:
-                    data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
-                    message = data.decode()
-                    if message[0] == '2':
-                        print(f"Received message from {address}: message type 2 - acknowledgement")
-                        acknowledged = True
-                break
-        elif sequence_number != expected_sequence_number:
-            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, unexpected sequence number")
-            receiver_sock.sendto("3".encode(), address)
-            print(f"Sent message to {address}: message type 3 - negative acknowledgement")
-        elif received_crc != calculated_crc:
-            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
-            receiver_sock.sendto("3".encode(), address)
-            print(f"Sent message to {address}: message type 3 - negative acknowledgement")
-    choice = input("Where do you want to store the file ? (cwd / absolute path)")
-    if choice == "cwd":
-        path = os.getcwd()
-    else:
-        path = choice
-    file_path = os.path.join(path, file_name)
-    with open(file_path, "wb") as file:
-        file.write(reconstructed_message)
-    print("File saved at location: ", file_path)
+    reconstructed_message = None
+    while not connection_closed_event.is_set():
+        try:
+            receiver_sock.settimeout(TIMEOUT)
+            data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
+            header = data[:6]
+            fragment_data = data[6:-2]
+            received_crc = data[-2:]
+            length, total_packets, sequence_number = struct.unpack('>HHH', header)
+            calculated_crc = calculate_crc(header + fragment_data)
+            if received_crc == calculated_crc and sequence_number == expected_sequence_number:
+                receiver_sock.settimeout(None)
+                fragments.append(fragment_data)
+                expected_sequence_number += 1
+                print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement")
+                if expected_sequence_number == total_packets:
+                    # All fragments received, reconstruct the original message
+                    reconstructed_message = b''.join(fragments)
+                    print("Received file:", file_name, ", size: ", len(reconstructed_message), "Bytes")
+                    receiver_sock.sendto("6".encode(), address)
+                    print(f"Sent message to {address}: message type 6 - data received successfully")
+                    acknowledged = False
+                    while not acknowledged:
+                        data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
+                        message = data.decode()
+                        if message[0] == '2':
+                            print(f"Received message from {address}: message type 2 - acknowledgement")
+                            acknowledged = True
+                    break
+            elif sequence_number != expected_sequence_number:
+                receiver_sock.settimeout(None)
+                print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, unexpected sequence number")
+                receiver_sock.sendto("3".encode(), address)
+                print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+            elif received_crc != calculated_crc:
+                receiver_sock.settimeout(None)
+                print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
+                receiver_sock.sendto("3".encode(), address)
+                print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+        except socket.timeout:
+            print("Connection timed out.")
+            connection_closed_event.set()
+            break
+    if not connection_closed_event.is_set():
+        choice = input("Where do you want to store the file ? (cwd / absolute path)")
+        if choice == "cwd":
+            path = os.getcwd()
+        else:
+            path = choice
+        file_path = os.path.join(path, file_name)
+        with open(file_path, "wb") as file:
+            file.write(reconstructed_message)
+        print("File saved at location: ", file_path)
 
 
-def receive_message(receiver_sock):
+def receive_message(receiver_sock, connection_closed_event, file):
     fragments = []
     expected_sequence_number = 0
+    original_message = None
+    while not connection_closed_event.is_set():
+        try:
+            if file:
+                receiver_sock.settimeout(TIMEOUT*2)
+            else:
+                receiver_sock.settimeout(TIMEOUT)
+            data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
+            header = data[:6]
+            fragment_data = data[6:-2]
+            received_crc = data[-2:]
 
-    while True:
-        data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
-        header = data[:6]
-        fragment_data = data[6:-2]
-        received_crc = data[-2:]
+            length, total_packets, sequence_number = struct.unpack('>HHH', header)
+            calculated_crc = calculate_crc(header + fragment_data)
 
-        length, total_packets, sequence_number = struct.unpack('>HHH', header)
-        calculated_crc = calculate_crc(header + fragment_data)
+            if received_crc == calculated_crc and sequence_number == expected_sequence_number:
+                receiver_sock.settimeout(None)
+                fragments.append(fragment_data)
+                expected_sequence_number += 1
+                print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes")
+                receiver_sock.sendto("2".encode(), address)
+                print(f"Sent message to {address}: message type 2 - acknowledgement")
 
-        if received_crc == calculated_crc and sequence_number == expected_sequence_number:
-            fragments.append(fragment_data)
-            expected_sequence_number += 1
-            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes")
-            receiver_sock.sendto("2".encode(), address)
-            print(f"Sent message to {address}: message type 2 - acknowledgement")
+                if expected_sequence_number == total_packets:
+                    # All fragments received, reconstruct the original message
+                    reconstructed_message = b''.join(fragments)
+                    original_message = reconstructed_message.decode(FORMAT)
+                    print("Received message:", original_message, ", size: ", len(reconstructed_message), "Bytes")
+                    time.sleep(2)
+                    receiver_sock.sendto("6".encode(), address)
+                    print(f"Sent message to {address}: message type 6 - data received successfully")
+                    acknowledged = False
+                    while not acknowledged:
+                        data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
+                        message = data.decode()
+                        if message[0] == '2':
+                            print(f"Received message from {address}: message type 2 - acknowledgement")
+                            acknowledged = True
+                    break
 
-            if expected_sequence_number == total_packets:
-                # All fragments received, reconstruct the original message
-                reconstructed_message = b''.join(fragments)
-                original_message = reconstructed_message.decode(FORMAT)
-                print("Received message:", original_message, ", size: ", len(reconstructed_message), "Bytes")
-                time.sleep(2)
-                receiver_sock.sendto("6".encode(), address)
-                print(f"Sent message to {address}: message type 6 - data received successfully")
-                acknowledged = False
-                while not acknowledged:
-                    data, address = receiver_sock.recvfrom(RECEIVE_SIZE)
-                    message = data.decode()
-                    if message[0] == '2':
-                        print(f"Received message from {address}: message type 2 - acknowledgement")
-                        acknowledged = True
-                break
-
-        elif sequence_number != expected_sequence_number:
-            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, unexpected sequence number")
-            receiver_sock.sendto("3".encode(), address)
-            print(f"Sent message to {address}: message type 3 - negative acknowledgement")
-        elif received_crc != calculated_crc:
-            print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
-            receiver_sock.sendto("3".encode(), address)
-            print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+            elif sequence_number != expected_sequence_number:
+                receiver_sock.settimeout(None)
+                print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, unexpected sequence number")
+                receiver_sock.sendto("3".encode(), address)
+                print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+            elif received_crc != calculated_crc:
+                receiver_sock.settimeout(None)
+                print("Received fragment", sequence_number+1, "of", total_packets, ", size: ", length, "Bytes, CRC error")
+                receiver_sock.sendto("3".encode(), address)
+                print(f"Sent message to {address}: message type 3 - negative acknowledgement")
+        except socket.timeout:
+            print("Connection timed out.")
+            connection_closed_event.set()
     return original_message
 
 
